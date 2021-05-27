@@ -2,15 +2,9 @@ import matplotlib.pylab as plt
 import numpy as np
 import torch
 
-#   min_D f(D) = || D A - I ||^2
-# The opt is reached at D such that for all diagonal dD, we have
-#   0 = df = ||D A - I + dD A||^2 - ||D A - I||^2
-#     = 2 tr (DA-I)' dD A
-#     = 2 tr A (DA-I)' dD
-# This implies
-#     diag(AA'D) = diag(A)
-#     diag(AA') D = diag(A)
-#     D = diag(A) / diag(AA')
+# Solve
+#   min_X || X^-1 A - I ||
+# by gradient descent. The optimum is reached when X = A.
 
 class Invert(torch.nn.Module):
     def __init__(self, X: torch.Tensor):
@@ -18,18 +12,18 @@ class Invert(torch.nn.Module):
         self.X = torch.nn.Parameter(X)
 
     def forward(self, A: torch.Tensor):
-        assert A.shape == (self.X.shape[0], self.X.shape[0])
+        assert A.shape == self.X.shape
 
-        return torch.sum((torch.diag(self.X) @ A - torch.eye(*A.shape))**2)
+        return torch.sum((torch.linalg.solve(self.X, A) - torch.eye(*A.shape))**2)
 
 def main():
-    A = torch.eye(5, 5, dtype=torch.double)
-    A += .5 * torch.rand(A.shape, dtype=A.dtype)
+    A = torch.rand(5, 5, dtype=torch.float64)
+    A += torch.eye(*A.shape)
 
-    model = Invert(torch.zeros(A.shape[0], dtype=torch.double))
-    optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+    model = Invert(torch.eye(*A.shape, dtype=torch.double))
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-2)
 
-    losses = np.zeros(10000)
+    losses = np.zeros(1000)
     for it in range(losses.size):
         optimizer.zero_grad()
         loss = model(A)
@@ -37,17 +31,15 @@ def main():
         optimizer.step()
 
         losses[it] = float(loss)
-        #if it>1 and losses[it] > losses[it-1]:
-            #break
     losses = losses[:it]
 
     print("A =\n", A)
     print("X =\n", model.X)
     print("loss(X) = ", float(model(A)))
 
-    Xhat = torch.diag(A) / torch.diag(A @ A.T)
+    Xhat = np.linalg.inv(A)
     print("Xhat =\n", Xhat)
-    print("loss(Xhat) = ", float(Invert(Xhat)(A)))
+    print("loss(Xhat) = 0")
 
     plt.plot(losses)
     plt.show()
