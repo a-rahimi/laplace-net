@@ -16,8 +16,10 @@ class Invert(torch.nn.Module):
     def forward(self, A: torch.Tensor):
         assert A.shape == (5, 5)
 
+        shuffled_X = self.X[np.arange(len(self.X)-1, -1, -1)]
+
         X_full = torch.sparse_coo_tensor(
-            [[0, 1, 2, 3, 4, 0, 4], [0, 1, 2, 3, 4, 4, 0]], self.X, (5,5)
+            [[0, 1, 2, 3, 4, 0, 4], [0, 1, 2, 3, 4, 4, 0]], shuffled_X, (5,5)
         ).to_dense() + torch.eye(5, 5)
 
         return torch.sum((torch.linalg.solve(X_full, A) - torch.eye(*A.shape)) ** 2)
