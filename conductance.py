@@ -1,13 +1,65 @@
+from typing import Iterable, Tuple
+
 import matplotlib.pylab as plt
 import numpy as np
 import torch
 
 
+def lattice_edges(
+    image_height: int, image_width: int
+) -> Tuple[Iterable[int], Iterable[int]]:
+    """The set of edges in a 2D 4-connected graph.
+
+    The edges in the network connect each vertex to its four adjacent vertices.
+    A vertex (i,j) is represented as its flat index into the 2D image, as the
+    integer i * image_width + j.
+
+    An edge connects two vertices, so we represent the edges sa two lists: the
+    flat index of the start vertex, and the flat index of the end vertex.
+
+    Every pair of connected vertices appears twice in this representation: once
+    where the vertex is the center, and once again when it's a neighbor.
+    """
+
+    # nx2 array of coordinates (i,j)
+    Is, Js = np.meshgrid(range(image_height), range(image_width))
+    centers = np.vstack((Is.flatten(), Js.flatten())).T
+
+    adjacency = np.array(((0, -1), (0, +1), (-1, 0), (+1, 0)))
+
+    # 4n x 2 array of neighbors of (i,j)
+    neighbors = (centers[:, None, :] + adjacency).reshape(-1, 2)
+
+    # Index of valid neighbors
+    i_valid = (
+        (0 <= neighbors[:, 0])
+        * (neighbors[:, 0] < image_height)
+        * (0 <= neighbors[:, 1])
+        * (neighbors[:, 1] < image_width)
+    )
+
+    # Represent the edges in the network. Each entry of edges_center is
+    # (i,j), and its corresponding entry in edges_neighbor is an element of
+    # N(i,j)
+    edges_center = centers.repeat(len(adjacency), axis=0)[i_valid].dot((image_width, 1))
+    edges_neighbor = neighbors[i_valid].dot((image_width, 1))
+
+    return edges_center, edges_neighbor
+
+
 class SolveLaplace(torch.nn.Module):
-    def __init__(self, log_resistances: torch.Tensor):
+    def __init__(self, image_height: int, image_width: int):
         super().__init__()
-        self.log_resistances = torch.nn.Parameter(log_resistances)
+
+        # Parameters
+        self.log_resistances = torch.nn.Parameter(
+            torch.rand(image_height, image_width, dtype=torch.float64)
+        )
         self.output_offset = torch.nn.Parameter(torch.tensor(0.0))
+
+        self.edges_center, self.edges_neighbor = lattice_edges(
+            image_height, image_width
+        )
 
     def forward(self, input_currents: torch.Tensor):
         params_height, params_width = self.log_resistances.shape
@@ -44,35 +96,13 @@ class SolveLaplace(torch.nn.Module):
         #
         # The non-zero entries are at columns (u,v) in N(i,j), the neighbors of (i,j).
 
-        # nx2 array of coordinates (i,j)
-        Is, Js = np.meshgrid(range(image_height), range(image_width))
-        centers = np.vstack((Is.flatten(), Js.flatten())).T
-
-        # 4n x 2 array of neighbors of (i,j)
-        neighbors = (
-            centers[:, None, :] + np.array(((0, -1), (0, +1), (-1, 0), (+1, 0)))
-        ).reshape(-1, 2)
-
-        # Index of valid neighbors
-        i_valid = (
-            (0 <= neighbors[:, 0])
-            * (neighbors[:, 0] < image_height)
-            * (0 <= neighbors[:, 1])
-            * (neighbors[:, 1] < image_width)
-        )
-
-        # Represent the edges in the network. Each entry of edges_center is
-        # (i,j), and its corresponding entry in edges_neighbor is an element of
-        # N(i,j)
-        edges_center = centers.repeat(4, axis=0)[i_valid].dot((image_width, 1))
-        edges_neighbor = neighbors[i_valid].dot((image_width, 1))
-
         # Element (i,j) of this vector is R[i,j]
         center_conductances = torch.exp(self.log_resistances).flatten()
 
         Z_off_diagonal = torch.sparse_coo_tensor(
-            ((edges_center, edges_neighbor)),
-            center_conductances[edges_center] + center_conductances[edges_neighbor],
+            ((self.edges_center, self.edges_neighbor)),
+            center_conductances[self.edges_center]
+            + center_conductances[self.edges_neighbor],
             (image_width * image_height, image_width * image_height),
         ).to_dense()
 
@@ -93,12 +123,24 @@ class SolveLaplace(torch.nn.Module):
         #
         # All this to say that instead of solve(Z, y), we run solve(Z + 1, y)
 
-        return torch.linalg.solve(
-            Z + 1,
-            input_currents.reshape(n_batches, image_width * image_height, 1),
-        ).reshape(
-            input_currents.shape
-        )  + self.output_offset
+        return (
+            torch.linalg.solve(
+                Z + 1,
+                input_currents.reshape(n_batches, image_width * image_height, 1),
+            ).reshape(input_currents.shape)
+            + self.output_offset
+        )
+
+
+class LayeredLaplace(torch.nn.Module):
+    def __init__(self, image_height: int, image_width: int):
+        super().__init__()
+        self.lap1 = SolveLaplace(image_height, image_width)
+        self.voltage_to_current_converter = torch.nn.Identity()
+        self.lap2 = SolveLaplace(image_height, image_width)
+
+    def forward(self, x):
+        return self.lap2(self.voltage_to_current_converter(self.lap1(x)))
 
 
 def main():
@@ -111,8 +153,8 @@ def main():
     I_input[0, 0] = 1
     I_input[-1, -1] = -1
 
-    model = SolveLaplace(torch.rand(*V_target.shape, dtype=torch.float64))
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e0)
+    model = LayeredLaplace(*V_target.shape)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-1)
 
     # Set up plots.
     fig, axs = plt.subplots(2, 3, figsize=(18, 6))
@@ -123,7 +165,7 @@ def main():
     axs[0, 1].imshow(I_input, cmap=plt.cm.hot)
     axs[0, 1].set_title("Input current")
 
-    axs[0, 2].axis('off')
+    axs[0, 2].axis("off")
 
     (h_losses,) = axs[1, 0].plot([])
     axs[1, 0].set_title("Losses")
@@ -134,13 +176,13 @@ def main():
     axs[1, 1].set_title("Observed voltages")
 
     im_log_resistances = axs[1, 2].imshow(
-        torch.exp(model.log_resistances.detach()).numpy(),
+        torch.exp(model.lap1.log_resistances.detach()).numpy(),
         cmap=plt.cm.hot,
     )
     axs[1, 2].set_title("Resistances")
 
     losses = []
-    for it in range(100):
+    for it in range(1000):
         # Take one optimization step.
         optimizer.zero_grad()
         V_out = model(I_input[None, :, :])
@@ -156,10 +198,14 @@ def main():
         axs[1, 0].set_ylim((min(losses), max(losses)))
         im_vout.set_data(V_out.detach().numpy()[0])
         im_vout.autoscale()
-        im_log_resistances.set_data(torch.exp(model.log_resistances.detach()).numpy())
+        im_log_resistances.set_data(
+            torch.exp(model.lap1.log_resistances.detach()).numpy()
+        )
         im_log_resistances.autoscale()
         plt.pause(1e-4)
         plt.show(block=False)
     plt.show()
 
-main()
+
+if __name__ == "__main__":
+    main()
