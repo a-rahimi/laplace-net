@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import os
 import subprocess
 
@@ -7,9 +9,9 @@ import torch.utils.data as data_utils
 from torch import nn
 import torchvision
 import torchvision.transforms as transforms
-import torchvision.models
 import torch.utils.tensorboard as torch_tb
 
+from pytorch_resnet_cifar10 import resnet
 
 def git_HEAD_hash() -> str:
     return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf8").strip()
@@ -32,37 +34,46 @@ def model_accuracy(
     return correct / total
 
 
-def train_and_eval():
-    os.makedirs("checkpoints", exist_ok=True)
-
-    transform = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
-    )
-
+def data_loaders() -> Tuple[data_utils.DataLoader, data_utils.DataLoader]:
     batch_size = 64
     num_workers = 2
-    trainset = torchvision.datasets.CIFAR10(
-        root="./data", train=True, download=True, transform=transform
-    )
-    trainloader = data_utils.DataLoader(
-        trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers
-    )
-    testset = torchvision.datasets.CIFAR10(
-        root="./data", train=False, download=True, transform=transform
-    )
-    testloader = data_utils.DataLoader(
-        testset, batch_size=batch_size, shuffle=False, num_workers=num_workers
-    )
 
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
+    train_loader = data_utils.DataLoader(
+        torchvision.datasets.CIFAR10(root='./data', train=True, transform=transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomCrop(32, 4),
+            transforms.ToTensor(),
+            normalize,
+        ]), download=True),
+        batch_size=batch_size, shuffle=True,
+        num_workers=num_workers, pin_memory=True)
+
+    val_loader = data_utils.DataLoader(
+        torchvision.datasets.CIFAR10(root='./data', train=False, transform=transforms.Compose([
+            transforms.ToTensor(),
+            normalize,
+        ])),
+        batch_size=128, shuffle=False,
+        num_workers=num_workers, pin_memory=True)
+
+    return train_loader, val_loader
+
+
+def train_and_eval():
+    os.makedirs("checkpoints", exist_ok=True)
     tb_writer = torch_tb.SummaryWriter(
         "checkpoints/" + git_HEAD_hash(), flush_secs=1000, max_queue=1000
     )
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    model = torchvision.models.resnet18(pretrained=False)
-    model.fc = nn.Linear(512, 10, bias=True)
+    model = resnet.resnet20()
     model.to(device)
+
+    train_loader, val_loader = data_loaders()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
@@ -72,7 +83,7 @@ def train_and_eval():
         running_loss = 0.0
         model.train()
 
-        for i_batch, (images, labels) in enumerate(trainloader, 0):
+        for i_batch, (images, labels) in enumerate(train_loader):
             i_batch_cumulative += 1
             images, labels = images.to(device), labels.to(device)
             loss = criterion(model(images), labels)
@@ -91,7 +102,7 @@ def train_and_eval():
 
         model.eval()
         torch.save(model.state_dict(), f"checkpoints/{epoch:03d}")
-        eval_accuracy = model_accuracy(model, device, testloader)
+        eval_accuracy = model_accuracy(model, device, val_loader)
         tb_writer.add_scalar("eval_accuracy", 100 * eval_accuracy, i_batch_cumulative)
         print("Eval accuracy: %d %%" % (100 * eval_accuracy))
 
