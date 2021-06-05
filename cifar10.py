@@ -75,7 +75,7 @@ def train_and_eval():
 
     train_loader, val_loader = data_loaders()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
 
     criterion = nn.CrossEntropyLoss()
     i_batch_cumulative = 0
@@ -101,7 +101,7 @@ def train_and_eval():
                 running_loss = 0.0
 
         model.eval()
-        torch.save(model.state_dict(), f"checkpoints/{epoch:03d}")
+        torch.save(model.state_dict(), f"checkpoints/{epoch:03d}.pt")
         eval_accuracy = model_accuracy(model, device, val_loader)
         tb_writer.add_scalar("eval_accuracy", 100 * eval_accuracy, i_batch_cumulative)
         print("Eval accuracy: %d %%" % (100 * eval_accuracy))
