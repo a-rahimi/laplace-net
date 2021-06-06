@@ -133,7 +133,7 @@ def train_and_eval(resume: bool = True):
 
     train_loader, val_loader = data_loaders()
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.1)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
     epoch, i_batch_cumulative = 0, 0
     if resume:
