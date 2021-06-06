@@ -201,6 +201,31 @@ class SolvePoissonTensor(nn.Module):
         return self.bias + ys.sum(axis=0)
 
 
+class MultiSolvePoissonTensor(nn.Module):
+    """A bank of tensoriized poisson solvers.
+
+    Multiple replicas of SolvePoissonTensor, stacked to create a multi-channel image.
+    """
+
+    def __init__(
+        self, in_planes: int, image_height: int, image_width: int, out_planes: int
+    ):
+        super().__init__()
+
+        self.tensor_solvers = nn.ModuleList(
+            SolvePoissonTensor(in_planes, image_height, image_width)
+            for _ in range(out_planes)
+        )
+
+    def forward(self, input_currents: torch.Tensor):
+        # r is (out_planes, num_batches, height, width)
+        r = torch.stack(
+            [tensor_solver(input_currents) for tensor_solver in self.tensor_solvers]
+        )
+        # Convert to (num_batches, out_planes, height, width)
+        return r.transpose(0, 1)
+
+
 def main():
     plt.style.use("dark_background")
 
@@ -211,7 +236,7 @@ def main():
     I_input[0, 0] = 1
     I_input[-1, -1] = -1
 
-    model = SolvePoissonTensor(*I_input[None, :, :].shape)
+    model = MultiSolvePoissonTensor(1, 5, 5, 2)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-1)
 
     # Set up plots.
@@ -233,19 +258,22 @@ def main():
     im_vout = axs[1, 1].imshow(0 * V_target, cmap=plt.cm.hot)
     axs[1, 1].set_title("Observed voltages")
 
-    im_log_resistances = axs[1, 2].imshow(
-        torch.exp(model.solvers[0].log_resistances.detach()).numpy(),
+    im_vout2 = axs[1, 2].imshow(
+        0 * V_target,
         cmap=plt.cm.hot,
     )
-    axs[1, 2].set_title("Resistances")
+    axs[1, 2].set_title("Observed second voltages")
 
     losses = []
     for it in range(1000):
         # Take one optimization step.
         optimizer.zero_grad()
         V_out = model(I_input[None, None, :, :])
-        assert V_out.shape == (1, 5, 5)
-        loss = ((V_out - V_target) ** 2).sum()
+        assert V_out.shape == (1, 2, 5, 5), V_out.shape
+        # There is only one batch.
+        V_out = V_out[0]
+
+        loss = ((V_out[0] - V_target) ** 2).sum() + ((V_out[1] - V_target) ** 2).sum()
         loss.backward()
         optimizer.step()
 
@@ -255,12 +283,13 @@ def main():
         h_losses.set_data(range(len(losses)), losses)
         axs[1, 0].set_xlim((0, len(losses)))
         axs[1, 0].set_ylim((min(losses), max(losses)))
-        im_vout.set_data(V_out.detach().numpy()[0])
+
+        im_vout.set_data(V_out[0].detach().numpy())
         im_vout.autoscale()
-        im_log_resistances.set_data(
-            torch.exp(model.solvers[0].log_resistances.detach()).numpy()
-        )
-        im_log_resistances.autoscale()
+
+        im_vout2.set_data(V_out[1].detach().numpy())
+        im_vout2.autoscale()
+
         plt.pause(1e-4)
         plt.show(block=False)
     plt.show()
