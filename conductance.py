@@ -3,6 +3,7 @@ from typing import Iterable, Tuple
 import matplotlib.pylab as plt
 import numpy as np
 import torch
+from torch import nn
 
 
 def lattice_edges(
@@ -47,19 +48,72 @@ def lattice_edges(
     return edges_center, edges_neighbor
 
 
-class SolveLaplace(torch.nn.Module):
-    def __init__(self, image_height: int, image_width: int):
+class SolvePoisson(nn.Module):
+    """Solve the possoin equation on a 2D grid.
+
+    Solve a problem of the form
+
+       ∇²(R y) = x
+
+    on a 2D grid for y. Here, R is a 2D array with dimension (height, width),
+    and x, and y are batched 2D arrays with dimensions as batch_size x height x
+    width.
+
+    Since the solver is written in torch, you can compute the gradient of the
+    solution with respect to both x and R.
+
+    This is a generic solver for Poisson's equation, but the nomenclature is
+    specific to solving a problem for a resistive sheet whose conductance
+    varies over space.
+
+    Example: Suppose a current I(i,j) is driven through each point (i,j) of a
+    resistive sheet whose resistance at point (i,j) is R(i,j) =
+    exp(log_resistance(i,j)). To compute the voltage at every point (i,j), we
+    would solve
+
+          ∇²(exp(log_resistances) voltages) = currents
+
+    Run:
+          solver = SolvePoissoin(log_resistances)
+          voltages = solver(currents)
+
+    But we can also solve for the resistances if we're given the currents and
+    the observed voltages.
+
+    To enforce that resistance must always be positive, the instantaneous
+    resistance at node (i,j) is supplied as the log-resistances r[i,j].  The
+    instantaneous resistance at node (i,j) is  R[i,j] = exp(r[i,j]).
+
+    Even though in the continuous representation, c and x appear
+    interchangeable, they play different roles in the discrete problem.  Let
+    (u,v) = N(i,j) denote the neighbors of node (i,j).  The resistance between
+    two adjacent nodes (i,j) and (u,v) can be computed from the instantaneous
+    resistance at the nodes: it's the sum of their instantaneous resistance:
+
+           R[(i,j), (u,v)] = exp(r[i,j]) + exp(r[u,v])
+
+    To compute the voltage at every node (i,j), we'll use the fact that the
+    current flowing out of the node must equal the current flowing in:
+
+           I[i,j] = sum_{(u,v) in N(i,j)} (V[i,j] - V[u,v]) / R[(i,j), (u,v)]
+
+    In matrix form, this gives
+
+           Z V = I,
+
+    where row (i,j) of matrix Z has the form
+
+          [... 1/R[(i,j), (u1,v1)] ... -Z_ii ...  1/R[(i,j), (ui,vi)] ...]
+
+    where Z_ii is the sum of the all the other entries in the row.  The
+    non-zero entries are at columns (u,v) in N(i,j), the neighbors of (i,j).
+    """
+
+    def __init__(self, log_resistances: torch.Tensor):
         super().__init__()
+        self.log_resistances = nn.Parameter(log_resistances)
 
-        # Parameters
-        self.log_resistances = torch.nn.Parameter(
-            torch.rand(image_height, image_width, dtype=torch.float64)
-        )
-        self.output_offset = torch.nn.Parameter(torch.tensor(0.0))
-
-        self.edges_center, self.edges_neighbor = lattice_edges(
-            image_height, image_width
-        )
+        self.edges_center, self.edges_neighbor = lattice_edges(*log_resistances.shape)
 
     def forward(self, input_currents: torch.Tensor):
         params_height, params_width = self.log_resistances.shape
@@ -69,32 +123,6 @@ class SolveLaplace(torch.nn.Module):
 
         # This slab can't store or leak currents. Ensure the total current flux is 0.
         input_currents = input_currents - input_currents.mean()
-
-        # To enforce that resistance must always be positive, the instantaneous
-        # resistance at node (i,j) is supplied as the log-resistances r[i,j].
-        # The instantaneous resistance at node (i,j) is  R[i,j] = exp(r[i,j]).
-        #
-        # Let (u,v) = N(i,j) denote the neighbors of node (i,j).
-        # The resistance between two adjacent nodes (i,j) and (u,v) can be
-        # computed from the instantaneous resistance at the nodes: it's the
-        # sum of their instantaneous resistance:
-        #
-        #        R[(i,j), (u,v)] = exp(r[i,j]) + exp(r[u,v])
-        #
-        # To compute the voltage at every node (i,j), we'll use the fact that
-        # the current flowing out of the node must equal the current flowing in:
-        #
-        #    I[i,j] = sum_{(u,v) in N(i,j)} (V[i,j] - V[u,v]) / R[(i,j), (u,v)]
-        #
-        # In matrix form, this gives
-        #
-        #    Z V = I,
-        #
-        # where row (i,j) of matrix Z has the form
-        #
-        #    [... -1/R[(i,j), (u1,v1)] ... sum_{(u,v) in N(i,j)} 1/R[(i,j),(u,v)] ... -1/R[(i,j), (ui,vi)] ...]
-        #
-        # The non-zero entries are at columns (u,v) in N(i,j), the neighbors of (i,j).
 
         # Element (i,j) of this vector is R[i,j]
         center_conductances = torch.exp(self.log_resistances).flatten()
@@ -121,26 +149,56 @@ class SolveLaplace(torch.nn.Module):
         # An easy proof is to write the SVD of Z+11' in terms of the SVD Z=USV',
         # and to notice that Z (Z+11')^-1 y = y.
         #
-        # All this to say that instead of solve(Z, y), we run solve(Z + 1, y)
+        # All this to say that instead of solve(Z, y), we run solve(Z + 2, y)
 
-        return (
-            torch.linalg.solve(
-                Z + 1,
-                input_currents.reshape(n_batches, image_width * image_height, 1),
-            ).reshape(input_currents.shape)
-            + self.output_offset
+        return torch.linalg.solve(
+            Z + 1,
+            input_currents.reshape(n_batches, image_width * image_height, 1),
+        ).reshape(input_currents.shape)
+
+
+class SolvePoissonTensor(nn.Module):
+    """Solve one Poisson equation per channel and sum the results.
+
+    Args:
+        x: (num_batches, in_planes, height, width)
+        R: (in_planes, height, width)
+
+    Returns:
+        y: (num_batches, height, width)
+
+    For each plane c, solve for y_c in
+
+        ∇²(R_c y_c) = x_c
+
+    Then return y = bias + sum_c w_c y_c.
+    """
+
+    def __init__(self, in_planes: int, image_height: int, image_width: int):
+        super().__init__()
+
+        self.solvers = nn.ModuleList(
+            [
+                SolvePoisson(torch.rand(image_height, image_width, dtype=torch.float64))
+                for _ in range(in_planes)
+            ]
+        )
+        self.weights = nn.Parameter(torch.ones(in_planes))
+        self.bias = nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, input_currents: torch.Tensor):
+        num_batches, in_planes, height, width = input_currents.shape
+        assert in_planes == len(self.solvers)
+
+        # ys has shape (in_planes, num_batches, height, width)
+        ys = torch.stack(
+            [
+                self.weights[i] * self.solvers[i](input_currents[:, i, :, :])
+                for i in range(in_planes)
+            ]
         )
 
-
-class LayeredLaplace(torch.nn.Module):
-    def __init__(self, image_height: int, image_width: int):
-        super().__init__()
-        self.lap1 = SolveLaplace(image_height, image_width)
-        self.voltage_to_current_converter = torch.nn.Identity()
-        self.lap2 = SolveLaplace(image_height, image_width)
-
-    def forward(self, x):
-        return self.lap2(self.voltage_to_current_converter(self.lap1(x)))
+        return self.bias + ys.sum(axis=0)
 
 
 def main():
@@ -153,7 +211,7 @@ def main():
     I_input[0, 0] = 1
     I_input[-1, -1] = -1
 
-    model = LayeredLaplace(*V_target.shape)
+    model = SolvePoissonTensor(*I_input[None, :, :].shape)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-1)
 
     # Set up plots.
@@ -176,7 +234,7 @@ def main():
     axs[1, 1].set_title("Observed voltages")
 
     im_log_resistances = axs[1, 2].imshow(
-        torch.exp(model.lap1.log_resistances.detach()).numpy(),
+        torch.exp(model.solvers[0].log_resistances.detach()).numpy(),
         cmap=plt.cm.hot,
     )
     axs[1, 2].set_title("Resistances")
@@ -185,7 +243,8 @@ def main():
     for it in range(1000):
         # Take one optimization step.
         optimizer.zero_grad()
-        V_out = model(I_input[None, :, :])
+        V_out = model(I_input[None, None, :, :])
+        assert V_out.shape == (1, 5, 5)
         loss = ((V_out - V_target) ** 2).sum()
         loss.backward()
         optimizer.step()
@@ -199,7 +258,7 @@ def main():
         im_vout.set_data(V_out.detach().numpy()[0])
         im_vout.autoscale()
         im_log_resistances.set_data(
-            torch.exp(model.lap1.log_resistances.detach()).numpy()
+            torch.exp(model.solvers[0].log_resistances.detach()).numpy()
         )
         im_log_resistances.autoscale()
         plt.pause(1e-4)

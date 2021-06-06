@@ -125,8 +125,7 @@ def train_and_eval(resume: bool = True):
     os.makedirs(checkpoints_dir, exist_ok=True)
     tb_writer = torch_tb.SummaryWriter(checkpoints_dir, flush_secs=1000, max_queue=1000)
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(device)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = resnet.resnet20()
     model.to(device)
@@ -137,7 +136,9 @@ def train_and_eval(resume: bool = True):
 
     epoch, i_batch_cumulative = 0, 0
     if resume:
-        epoch, i_batch_cumulative = resume_checkpoint(device, checkpoints_dir, model, optimizer)
+        epoch, i_batch_cumulative = resume_checkpoint(
+            device, checkpoints_dir, model, optimizer
+        )
         epoch += 1
 
     criterion = nn.CrossEntropyLoss()
