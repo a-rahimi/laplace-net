@@ -289,49 +289,58 @@ class PoissonNet(nn.Module):
         self, image_height: int = 32, image_width: int = 32, num_classes: int = 10
     ):
         super().__init__()
-        self.conv1 = nn.Conv2d(3, 4, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(4)
-        self.group1 = make_copies(2, BasicBlock, 4, image_height, image_width, 4)
+        self.conv1 = nn.Conv2d(3, 2, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(2)
+        self.group1 = make_copies(
+            1, BasicBlock, in_planes=2, image_height=16, image_width=16, out_planes=2
+        )
 
-        self.group1_to_group2 = BasicBlock(4, image_height // 2, image_width // 2, 8)
+        self.group1_to_group2 = BasicBlock(
+            in_planes=2, image_height=8, image_width=8, out_planes=4
+        )
 
         self.group2 = make_copies(
-            2, BasicBlock, 8, image_height // 2, image_width // 2, 8
+            1, BasicBlock, in_planes=4, image_height=8, image_width=8, out_planes=4
         )
 
-        self.group2_to_group3 = BasicBlock(8, image_height // 4, image_width // 4, 16)
+        self.group2_to_group3 = BasicBlock(
+            in_planes=4, image_height=4, image_width=4, out_planes=8
+        )
 
         self.group3 = make_copies(
-            2, BasicBlock, 16, image_height // 4, image_width // 4, 16
+            1, BasicBlock, in_planes=8, image_height=4, image_width=4, out_planes=8
         )
-        self.linear = nn.Linear(16, num_classes)
+        self.linear = nn.Linear(8, num_classes)
 
     def forward(self, x):
         # x is batch x 3 x 32 x 32
 
         out = torch_func.relu(self.bn1(self.conv1(x)))
-        # out is batch x 4 x 32 x 32
+        # out is batch x 2 x 32 x 32
+
+        out = torch_func.avg_pool2d(out, 2)
+        # out is batch x 2 x 16 x 16
 
         out = self.group1(out)
-        # out is batch x 4 x 32 x 32
+        # out is batch x 2 x 16 x 16
 
         out = torch_func.avg_pool2d(out, 2)
-        # out is batch x 4 x 16 x 16
+        # out is batch x 2 x 8 x 8
 
         out = self.group1_to_group2(out)
-        # out is batch x 8 x 16 x 16
+        # out is batch x 4 x 8 x 8
 
         out = self.group2(out)
-        # out is batch x 8 x 16 x 16
+        # out is batch x 4 x 8 x 8
 
         out = torch_func.avg_pool2d(out, 2)
-        # out is batch x 8 x 8 x 8
+        # out is batch x 4 x 4 x 4
 
         out = self.group2_to_group3(out)
-        # out is batch x 16 x 8 x 8
+        # out is batch x 8 x 4 x 4
 
         out = self.group3(out)
-        # out is batch x 16 x 8 x 8
+        # out is batch x 8 x 4 x 4
 
         out = out.sum(axis=(2, 3))
         # out is batch x 16
