@@ -18,7 +18,7 @@ def run_instances(
     role: str,
     user: str = os.environ["USER"],
     instance_type: str = None,
-    image_id: str = "ami-030260b9d74ce5f7d",
+    image_id: str = "ami-0409ee1400c11f1e7",
 ) -> List[ec2.Instance]:
     # This call is documented here:
     #    https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/ec2.html#EC2.Client.run_instances
