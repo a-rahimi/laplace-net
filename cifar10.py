@@ -158,6 +158,7 @@ def train_and_eval(checkpoints_dir: str, resume: bool = True):
 
     criterion = nn.CrossEntropyLoss()
     for epoch in range(epoch, epoch + 100):
+        log.info("-----Epoch %d-----", epoch)
         model.train()
 
         for i_batch, (images, labels) in enumerate(train_loader):
@@ -170,8 +171,8 @@ def train_and_eval(checkpoints_dir: str, resume: bool = True):
             loss.backward()
             optimizer.step()
 
-            if i_batch % 100 == 0:
-                log.debug("[%d, %5d] loss: %.3f", epoch, i_batch, float(loss))
+            if i_batch % 1 == 0:
+                log.info("[%d, %5d] loss: %.3f", epoch, i_batch, float(loss))
                 tb_writer.add_scalar("batch_loss", float(loss), i_batch_cumulative)
 
         model.eval()
