@@ -3,11 +3,8 @@
 from typing import Optional, Tuple
 
 import fsspec
-import functools
-import glob
 import logging
 import os
-import subprocess
 import sys
 
 import matplotlib.pylab as plt
@@ -24,12 +21,6 @@ import conductance
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
-
-
-@functools.lru_cache(1)
-def git_HEAD_hash() -> str:
-    """The commit hash of the git's HEAD."""
-    return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf8").strip()
 
 
 def model_accuracy(
@@ -195,7 +186,7 @@ if __name__ == "__main__":
     os.environ["AWS_REGION"] = "us-west-2"
     os.environ["S3_ENDPOINT"] = "https://s3-us-west-2.amazonaws.com"
 
-    experiment = sys.argv[1] + "/" + git_HEAD_hash()
+    experiment = sys.argv[1]
 
     logging.basicConfig(
         format="%(asctime)s %(levelname)s %(name)s %(message)s", datefmt="%H:%M:%S"

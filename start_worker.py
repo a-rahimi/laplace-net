@@ -28,7 +28,7 @@ def run_instances(
                 "DeviceName": "/dev/sda1",
                 "Ebs": {
                     "DeleteOnTermination": True,
-                    "VolumeSize": 2000,
+                    "VolumeSize": 3000,
                     "VolumeType": "gp2",
                 },
             },
