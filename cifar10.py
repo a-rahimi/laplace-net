@@ -9,11 +9,11 @@ import sys
 
 import matplotlib.pylab as plt
 import torch
+import torch.utils.tensorboard as torch_tb  # Import this before torchvision. Otherwise you get a segfault (https://github.com/pytorch/pytorch/issues/30651)
 import torch.utils.data as data_utils
 from torch import nn
 import torchvision
 import torchvision.transforms as transforms
-import torch.utils.tensorboard as torch_tb
 import watchtower
 
 from pytorch_resnet_cifar10 import resnet
