@@ -1,9 +1,14 @@
-from typing import Tuple
+#!/usr/bin/env python3
 
-import glob
+from typing import Optional, Tuple
+
+import fsspec
 import functools
+import glob
+import logging
 import os
 import subprocess
+import sys
 
 import matplotlib.pylab as plt
 import torch
@@ -12,12 +17,17 @@ from torch import nn
 import torchvision
 import torchvision.transforms as transforms
 import torch.utils.tensorboard as torch_tb
+import watchtower
 
 from pytorch_resnet_cifar10 import resnet
+
+log = logging.getLogger(__name__)
+log.setLevel(logging.INFO)
 
 
 @functools.lru_cache(1)
 def git_HEAD_hash() -> str:
+    """The commit hash of the git's HEAD."""
     return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf8").strip()
 
 
@@ -93,24 +103,36 @@ def save_checkpoint(
     model: nn.Module,
     optimizer,
 ):
-    torch.save(
-        {
-            "epoch": epoch,
-            "i_batch_cumulative": i_batch_cumulative,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-        },
-        os.path.join(checkpoints_dir, f"{epoch:03d}.pt"),
-    )
+    with fsspec.open(os.path.join(checkpoints_dir, f"{epoch:03d}.pt"), "wb") as f:
+        torch.save(
+            {
+                "epoch": epoch,
+                "i_batch_cumulative": i_batch_cumulative,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+            },
+            f,
+        )
+
+
+def latest_checkpoint(checkpoints_dir: str) -> Optional[str]:
+    checkpoints = [
+        fname
+        for fname in fsspec.open(checkpoints_dir).fs.find(checkpoints_dir)
+        if fname.endswith(".pt")
+    ]
+
+    if checkpoints:
+        # Return the chronologically latest checkpoint.
+        return "s3://" + max(checkpoints)
 
 
 def resume_checkpoint(
     device: torch.device, checkpoints_dir: str, model: nn.Module, optimizer
 ) -> Tuple[int, int]:
     # Find the chronologically latest checkpoint
-    try:
-        checkpoint_path = sorted(glob.glob(os.path.join(checkpoints_dir, "*.pt")))[-1]
-    except IndexError:
+    checkpoint_path = latest_checkpoint(checkpoints_dir)
+    if not checkpoint_path:
         # No checkpoints found.
         return 0, 0
 
@@ -120,10 +142,8 @@ def resume_checkpoint(
     return d["epoch"], d["i_batch_cumulative"]
 
 
-def train_and_eval(resume: bool = True):
-    checkpoints_dir = os.path.join("checkpoints", git_HEAD_hash())
-    os.makedirs(checkpoints_dir, exist_ok=True)
-    tb_writer = torch_tb.SummaryWriter(checkpoints_dir, flush_secs=1000, max_queue=1000)
+def train_and_eval(checkpoints_dir: str, resume: bool = True):
+    tb_writer = torch_tb.SummaryWriter(checkpoints_dir)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -142,7 +162,7 @@ def train_and_eval(resume: bool = True):
         epoch += 1
 
     criterion = nn.CrossEntropyLoss()
-    for epoch in range(epoch, 100):
+    for epoch in range(epoch, epoch + 100):
         model.train()
 
         for i_batch, (images, labels) in enumerate(train_loader):
@@ -155,8 +175,8 @@ def train_and_eval(resume: bool = True):
             loss.backward()
             optimizer.step()
 
-            if i_batch % 10 == 0:
-                print("[%d, %5d] loss: %.3f" % (epoch, i_batch, float(loss)))
+            if i_batch % 100 == 0:
+                log.debug("[%d, %5d] loss: %.3f", epoch, i_batch, float(loss))
                 tb_writer.add_scalar("batch_loss", float(loss), i_batch_cumulative)
 
         model.eval()
@@ -164,10 +184,27 @@ def train_and_eval(resume: bool = True):
         eval_accuracy = model_accuracy(model, device, val_loader)
         tb_writer.add_scalar("eval_accuracy", 100 * eval_accuracy, i_batch_cumulative)
         tb_writer.add_scalar("eval_accuracy_at_epoch", 100 * eval_accuracy, epoch)
-        print("Eval accuracy: %d %%" % (100 * eval_accuracy))
+        log.info("Eval accuracy at epoch %d %d %%", epoch, 100 * eval_accuracy)
 
-    print("Finished training")
+    log.info("Finished training")
 
 
 if __name__ == "__main__":
-    train_and_eval()
+    os.environ["AWS_REGION"] = "us-west-2"
+    os.environ["S3_ENDPOINT"] = "https://s3-us-west-2.amazonaws.com"
+
+    experiment = sys.argv[1] + "/" + git_HEAD_hash()
+
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)s %(name)s %(message)s", datefmt="%H:%M:%S"
+    )
+    handler = watchtower.CloudWatchLogHandler(
+        log_group="experiments",
+        stream_name=experiment,
+    )
+    handler.setLevel(logging.DEBUG)
+    logging.root.addHandler(handler)
+    logging.getLogger("botocore").setLevel(logging.INFO)
+    logging.getLogger("urllib3").setLevel(logging.INFO)
+
+    train_and_eval("s3://tensorboard-log/new/" + experiment)
