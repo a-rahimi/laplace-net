@@ -20,6 +20,7 @@ import torch.utils.tensorboard as torch_tb
 import watchtower
 
 from pytorch_resnet_cifar10 import resnet
+import conductance
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
@@ -49,7 +50,7 @@ def model_accuracy(
 
 
 def data_loaders() -> Tuple[data_utils.DataLoader, data_utils.DataLoader]:
-    batch_size = 128
+    batch_size = 16
     num_workers = 2
 
     normalize = transforms.Normalize(
@@ -123,7 +124,7 @@ def latest_checkpoint(checkpoints_dir: str) -> Optional[str]:
     ]
 
     if checkpoints:
-        # Return the chronologically latest checkpoint.
+        # Return the lexicographically latest checkpoint.
         return "s3://" + max(checkpoints)
 
 
@@ -147,7 +148,8 @@ def train_and_eval(checkpoints_dir: str, resume: bool = True):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = resnet.resnet20()
+    model = conductance.PoissonNet()
+    # model = resnet.resnet20()
     model.to(device)
 
     train_loader, val_loader = data_loaders()

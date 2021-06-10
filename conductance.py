@@ -4,6 +4,7 @@ import matplotlib.pylab as plt
 import numpy as np
 import torch
 from torch import nn
+import torch.nn.functional as torch_func
 
 
 def lattice_edges(
@@ -151,10 +152,16 @@ class SolvePoisson(nn.Module):
         #
         # All this to say that instead of solve(Z, y), we run solve(Z + 2, y)
 
-        return torch.linalg.solve(
-            Z + 1,
-            input_currents.reshape(n_batches, image_width * image_height, 1),
-        ).reshape(input_currents.shape)
+        return (
+            torch.linalg.solve(
+                Z + 1,
+                input_currents.double().reshape(
+                    n_batches, image_width * image_height, 1
+                ),
+            )
+            .reshape(input_currents.shape)
+            .float()
+        )
 
 
 class SolvePoissonTensor(nn.Module):
@@ -187,7 +194,7 @@ class SolvePoissonTensor(nn.Module):
         self.bias = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, input_currents: torch.Tensor):
-        num_batches, in_planes, height, width = input_currents.shape
+        in_planes = input_currents.shape[1]
         assert in_planes == len(self.solvers)
 
         # ys has shape (in_planes, num_batches, height, width)
@@ -198,6 +205,7 @@ class SolvePoissonTensor(nn.Module):
             ]
         )
 
+        # return (num_batches, height, width)
         return self.bias + ys.sum(axis=0)
 
 
@@ -217,13 +225,121 @@ class MultiSolvePoissonTensor(nn.Module):
             for _ in range(out_planes)
         )
 
-    def forward(self, input_currents: torch.Tensor):
+    def forward(self, input_currents: torch.Tensor) -> torch.Tensor:
         # r is (out_planes, num_batches, height, width)
         r = torch.stack(
             [tensor_solver(input_currents) for tensor_solver in self.tensor_solvers]
         )
         # Convert to (num_batches, out_planes, height, width)
         return r.transpose(0, 1)
+
+
+class BasicBlock(nn.Module):
+    def __init__(
+        self, in_planes: int, image_height: int, image_width: int, out_planes: int
+    ):
+        super().__init__()
+        self.solver1 = MultiSolvePoissonTensor(
+            in_planes, image_height, image_width, out_planes
+        )
+        self.bn1 = nn.BatchNorm2d(out_planes)
+        self.solver2 = MultiSolvePoissonTensor(
+            out_planes, image_height, image_width, out_planes
+        )
+        self.bn2 = nn.BatchNorm2d(out_planes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = torch_func.relu(self.bn1(self.solver1(x)))
+        out = self.bn2(self.solver2(out))
+
+        # The final output may have more planes (aka channels) than the input x.
+        # If so, pad x to match the output.
+        in_planes = x.shape[1]
+        out_planes = out.shape[1]
+        if in_planes < out_planes:
+            if (out_planes - in_planes) % 2:
+                raise ValueError(
+                    "For now, planes may vary by even numbers only: in_planes = %d, out_planes = %d"
+                    % (in_planes, out_planes)
+                )
+            pad = (out_planes - in_planes) // 2
+            shortcut = torch_func.pad(
+                x,
+                (0, 0, 0, 0, pad, pad),
+            )
+        elif in_planes == out_planes:
+            shortcut = x
+        else:
+            raise ValueError(
+                "For now, planes may only increase with layers: in_planes = %d, out_planes = %d"
+                % (in_planes, out_planes)
+            )
+
+        return torch_func.relu(out + shortcut)
+
+
+def make_copies(num_copies, cls, *args, **kwargs):
+    return nn.Sequential(*[cls(*args, **kwargs) for _ in range(num_copies)])
+
+
+class PoissonNet(nn.Module):
+    """A resnet-like network where convolutions have been replaced by Poisson solver."""
+
+    def __init__(
+        self, image_height: int = 32, image_width: int = 32, num_classes: int = 10
+    ):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 4, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(4)
+        self.group1 = make_copies(2, BasicBlock, 4, image_height, image_width, 4)
+
+        self.group1_to_group2 = BasicBlock(4, image_height // 2, image_width // 2, 8)
+
+        self.group2 = make_copies(
+            2, BasicBlock, 8, image_height // 2, image_width // 2, 8
+        )
+
+        self.group2_to_group3 = BasicBlock(8, image_height // 4, image_width // 4, 16)
+
+        self.group3 = make_copies(
+            2, BasicBlock, 16, image_height // 4, image_width // 4, 16
+        )
+        self.linear = nn.Linear(16, num_classes)
+
+    def forward(self, x):
+        # x is batch x 3 x 32 x 32
+
+        out = torch_func.relu(self.bn1(self.conv1(x)))
+        # out is batch x 4 x 32 x 32
+
+        out = self.group1(out)
+        # out is batch x 4 x 32 x 32
+
+        out = torch_func.avg_pool2d(out, 2)
+        # out is batch x 4 x 16 x 16
+
+        out = self.group1_to_group2(out)
+        # out is batch x 8 x 16 x 16
+
+        out = self.group2(out)
+        # out is batch x 8 x 16 x 16
+
+        out = torch_func.avg_pool2d(out, 2)
+        # out is batch x 8 x 8 x 8
+
+        out = self.group2_to_group3(out)
+        # out is batch x 16 x 8 x 8
+
+        out = self.group3(out)
+        # out is batch x 16 x 8 x 8
+
+        out = out.sum(axis=(2, 3))
+        # out is batch x 16
+
+        out = self.linear(out)
+        # outis batch x num_classes
+
+        return out
 
 
 def main():
