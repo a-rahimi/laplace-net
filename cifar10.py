@@ -147,7 +147,7 @@ def train_and_eval(checkpoints_dir: str, resume: bool = True):
 
     train_loader, val_loader = data_loaders()
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.0001)
 
     epoch, i_batch_cumulative = 0, 0
     if resume:
