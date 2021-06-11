@@ -183,21 +183,35 @@ def train_and_eval(checkpoints_dir: str, resume: bool = True):
 
 
 if __name__ == "__main__":
-    os.environ["AWS_REGION"] = "us-west-2"
-    os.environ["S3_ENDPOINT"] = "https://s3-us-west-2.amazonaws.com"
+    try:
+        os.environ["AWS_REGION"] = "us-west-2"
+        os.environ["S3_ENDPOINT"] = "https://s3-us-west-2.amazonaws.com"
 
-    experiment = sys.argv[1]
+        experiment = sys.argv[1]
 
-    logging.basicConfig(
-        format="%(asctime)s %(levelname)s %(name)s %(message)s", datefmt="%H:%M:%S"
-    )
-    handler = watchtower.CloudWatchLogHandler(
-        log_group="experiments",
-        stream_name=experiment,
-    )
-    handler.setLevel(logging.DEBUG)
-    logging.root.addHandler(handler)
-    logging.getLogger("botocore").setLevel(logging.INFO)
-    logging.getLogger("urllib3").setLevel(logging.INFO)
+        logging.basicConfig(
+            format="%(asctime)s %(levelname)s %(name)s %(message)s", datefmt="%H:%M:%S"
+        )
+        handler = watchtower.CloudWatchLogHandler(
+            log_group="experiments",
+            stream_name=experiment,
+        )
+        handler.setLevel(logging.DEBUG)
+        logging.root.addHandler(handler)
+        logging.getLogger("botocore").setLevel(logging.INFO)
+        logging.getLogger("urllib3").setLevel(logging.INFO)
 
-    train_and_eval("s3://tensorboard-log/new/" + experiment)
+        train_and_eval("s3://tensorboard-log/new/" + experiment)
+    except Exception as e:
+        # If the exception has a stderr field, add it to the log message.
+        # CalledProcessError has such a field, and it captures the stderr of
+        # the failed subprocess.
+        log.error(
+            "Exception caught: %s", getattr(e, "stderr", b"").decode(), exc_info=e
+        )
+        if False:
+            import pdb
+
+            pdb.post_mortem()
+        else:
+            raise
