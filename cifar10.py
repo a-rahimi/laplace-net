@@ -128,7 +128,8 @@ def resume_checkpoint(
         # No checkpoints found.
         return 0, 0
 
-    d = torch.load(checkpoint_path, map_location=device)
+    with fsspec.open(checkpoint_path, "rb") as f:
+        d = torch.load(f, map_location=device)
     model.load_state_dict(d["model_state_dict"])
     optimizer.load_state_dict(d["optimizer_state_dict"])
     return d["epoch"], d["i_batch_cumulative"]
