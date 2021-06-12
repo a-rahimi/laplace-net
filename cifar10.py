@@ -94,7 +94,8 @@ def save_checkpoint(
     epoch: int,
     i_batch_cumulative: int,
     model: nn.Module,
-    optimizer,
+    optimizer: torch.optim.Optimizer,
+    schedule: torch.optim.lr_scheduler,
 ):
     with fsspec.open(os.path.join(checkpoints_dir, f"{epoch:03d}.pt"), "wb") as f:
         torch.save(
@@ -103,6 +104,7 @@ def save_checkpoint(
                 "i_batch_cumulative": i_batch_cumulative,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "schedule_state_dict": schedule.state_dict(),
             },
             f,
         )
@@ -121,7 +123,11 @@ def latest_checkpoint(checkpoints_dir: str) -> Optional[str]:
 
 
 def resume_checkpoint(
-    device: torch.device, checkpoints_dir: str, model: nn.Module, optimizer
+    device: torch.device,
+    checkpoints_dir: str,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    schedule: torch.optim.lr_scheduler,
 ) -> Tuple[int, int]:
     # Find the chronologically latest checkpoint
     checkpoint_path = latest_checkpoint(checkpoints_dir)
@@ -133,6 +139,7 @@ def resume_checkpoint(
         d = torch.load(f, map_location=device)
     model.load_state_dict(d["model_state_dict"])
     optimizer.load_state_dict(d["optimizer_state_dict"])
+    schedule.load_state_dict(d["schedule_state_dict"])
     return d["epoch"], d["i_batch_cumulative"]
 
 
@@ -148,11 +155,12 @@ def train_and_eval(checkpoints_dir: str, resume: bool = True):
     train_loader, val_loader = data_loaders()
 
     optimizer = torch.optim.SGD(model.parameters(), lr=0.0001)
+    schedule = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.1)
 
     epoch, i_batch_cumulative = 0, 0
     if resume:
         epoch, i_batch_cumulative = resume_checkpoint(
-            device, checkpoints_dir, model, optimizer
+            device, checkpoints_dir, model, optimizer, schedule
         )
         epoch += 1
 
@@ -175,8 +183,11 @@ def train_and_eval(checkpoints_dir: str, resume: bool = True):
                 log.info("[%d, %5d] loss: %.3f", epoch, i_batch, float(loss))
                 tb_writer.add_scalar("batch_loss", float(loss), i_batch_cumulative)
 
+        schedule.step()
         model.eval()
-        save_checkpoint(checkpoints_dir, epoch, i_batch_cumulative, model, optimizer)
+        save_checkpoint(
+            checkpoints_dir, epoch, i_batch_cumulative, model, optimizer, schedule
+        )
         eval_accuracy = model_accuracy(model, device, val_loader)
         tb_writer.add_scalar("eval_accuracy", 100 * eval_accuracy, i_batch_cumulative)
         tb_writer.add_scalar("eval_accuracy_at_epoch", 100 * eval_accuracy, epoch)
