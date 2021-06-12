@@ -42,7 +42,7 @@ def model_accuracy(
 
 
 def data_loaders() -> Tuple[data_utils.DataLoader, data_utils.DataLoader]:
-    batch_size = 16
+    batch_size = 256
     num_workers = 2
 
     normalize = transforms.Normalize(
@@ -171,7 +171,7 @@ def train_and_eval(checkpoints_dir: str, resume: bool = True):
             loss.backward()
             optimizer.step()
 
-            if i_batch % 1 == 0:
+            if i_batch % 20 == 0:
                 log.info("[%d, %5d] loss: %.3f", epoch, i_batch, float(loss))
                 tb_writer.add_scalar("batch_loss", float(loss), i_batch_cumulative)
 
