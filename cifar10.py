@@ -2,6 +2,7 @@
 
 from typing import Optional, Tuple
 
+import argparse
 import fsspec
 import logging
 import os
@@ -183,26 +184,41 @@ def train_and_eval(checkpoints_dir: str, resume: bool = True):
     log.info("Finished training")
 
 
+def setup_logging(experiment: str):
+    # Set up environment variables to write tensorboard event files to S3.
+    os.environ["AWS_REGION"] = "us-west-2"
+    os.environ["S3_ENDPOINT"] = "https://s3-us-west-2.amazonaws.com"
+
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)s %(name)s %(message)s", datefmt="%H:%M:%S"
+    )
+    # The default handler goes to stderr. Only let warnings and errors go to stderr
+    logging.root.handlers[0].setLevel(logging.WARNING)
+
+    # Set up another handler that logs only low priority events to stdout.
+    handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(lambda record: record.levelno <= logging.INFO)
+    logging.root.addHandler(handler)
+
+    handler = watchtower.CloudWatchLogHandler(
+        log_group="experiments", stream_name=experiment
+    )
+    handler.setLevel(logging.DEBUG)
+    logging.root.addHandler(handler)
+
+    logging.getLogger("botocore").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("experiment")
+    parser.add_argument("--pdb", default=False, action="store_true")
+    args = parser.parse_args()
+
+    setup_logging(args.experiment)
     try:
-        os.environ["AWS_REGION"] = "us-west-2"
-        os.environ["S3_ENDPOINT"] = "https://s3-us-west-2.amazonaws.com"
-
-        experiment = sys.argv[1]
-
-        logging.basicConfig(
-            format="%(asctime)s %(levelname)s %(name)s %(message)s", datefmt="%H:%M:%S"
-        )
-        handler = watchtower.CloudWatchLogHandler(
-            log_group="experiments",
-            stream_name=experiment,
-        )
-        handler.setLevel(logging.DEBUG)
-        logging.root.addHandler(handler)
-        logging.getLogger("botocore").setLevel(logging.INFO)
-        logging.getLogger("urllib3").setLevel(logging.INFO)
-
-        train_and_eval("s3://tensorboard-log/new/" + experiment)
+        train_and_eval("s3://tensorboard-log/new/" + args.experiment)
     except Exception as e:
         # If the exception has a stderr field, add it to the log message.
         # CalledProcessError has such a field, and it captures the stderr of
@@ -210,7 +226,7 @@ if __name__ == "__main__":
         log.error(
             "Exception caught: %s", getattr(e, "stderr", b"").decode(), exc_info=e
         )
-        if False:
+        if args.pdb:
             import pdb
 
             pdb.post_mortem()
