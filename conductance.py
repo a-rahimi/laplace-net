@@ -50,7 +50,7 @@ def lattice_edges(
 
 
 class SolvePoisson(nn.Module):
-    """Solve the possoin equation on a 2D grid.
+    """Solve the Poisson equation on a 2D grid.
 
     Solve a problem of the form
 
@@ -68,32 +68,31 @@ class SolvePoisson(nn.Module):
     varies over space.
 
     Example: Suppose a current I(i,j) is driven through each point (i,j) of a
-    resistive sheet whose resistance at point (i,j) is R(i,j) =
-    exp(log_resistance(i,j)). To compute the voltage at every point (i,j), we
-    would solve
+    resistive sheet whose resistance at point (i,j) is R(i,j).  To enforce that
+    resistance must always be positive, the instantaneous resistance at node
+    (i,j) is supplied as the log-resistances r[i,j].  The instantaneous
+    resistance at node (i,j) is R[i,j] = exp(r[i,j]).
+
+    To compute the voltage at every point (i,j), we would solve
 
           ∇²(exp(log_resistances) voltages) = currents
 
-    Run:
+    by running
+
           solver = SolvePoissoin(log_resistances)
           voltages = solver(currents)
 
-    But we can also solve for the resistances if we're given the currents and
-    the observed voltages.
+    This is a closed form solution and does not require you to run additional
+    gradient descent steps to refine the solution.
 
-    To enforce that resistance must always be positive, the instantaneous
-    resistance at node (i,j) is supplied as the log-resistances r[i,j].  The
-    instantaneous resistance at node (i,j) is  R[i,j] = exp(r[i,j]).
-
-    Even though in the continuous representation, c and x appear
-    interchangeable, they play different roles in the discrete problem.  Let
-    (u,v) = N(i,j) denote the neighbors of node (i,j).  The resistance between
-    two adjacent nodes (i,j) and (u,v) can be computed from the instantaneous
-    resistance at the nodes: it's the sum of their instantaneous resistance:
+    Here is how the solution is computed: Let (u,v) = N(i,j) denote the
+    neighbors of node (i,j).  The resistance between two adjacent nodes (i,j)
+    and (u,v) can be computed from the instantaneous resistance at the nodes.
+    It's the sum of their instantaneous resistance:
 
            R[(i,j), (u,v)] = exp(r[i,j]) + exp(r[u,v])
 
-    To compute the voltage at every node (i,j), we'll use the fact that the
+    To compute the voltage at every node (i,j), use the fact that the
     current flowing out of the node must equal the current flowing in:
 
            I[i,j] = sum_{(u,v) in N(i,j)} (V[i,j] - V[u,v]) / R[(i,j), (u,v)]
